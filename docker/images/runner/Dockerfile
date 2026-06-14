@@ -1,5 +1,7 @@
 # Doppler Secrets Manager CLI
 FROM dopplerhq/cli:latest AS dpcli_image
+# HashiCorp Packer
+FROM hashicorp/packer:latest AS pkr_image
 
 # Main Image
 FROM python:3.14-slim
@@ -19,7 +21,11 @@ RUN ansible-galaxy collection install community.proxmox
 
 # Copy the doppler binary
 COPY --from=dpcli_image /bin/doppler /usr/local/bin/doppler
-RUN chmod +x /usr/local/bin/doppler
+
+# Copy the packer binary
+COPY --from=pkr_image /bin/packer /usr/local/bin/packer
+ENV PACKER_PLUGIN_PATH=/opt/packer/plugins
+RUN packer plugins install github.com/hashicorp/proxmox
 
 COPY ./ansible-data /opt/ansible
 WORKDIR /opt/ansible
