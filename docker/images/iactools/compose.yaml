@@ -1,0 +1,13 @@
+services:
+  ansible:
+    build:
+      context: "."
+      dockerfile: "./Dockerfile"
+    command: ["site.yml"] # Which playbook to execute
+    secrets:
+      - dp_ansible_token
+    restart: "no"
+
+secrets:
+  dp_ansible_token:
+    file: /opt/secrets/dp_ansible_token
