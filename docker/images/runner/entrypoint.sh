@@ -1,6 +1,5 @@
 #!/bin/bash
-# set -e vs set -euo pipefail vs set -uo pipefail?
-set -e
+set -uo pipefail
 
 # --- Options -----------------------------------------------------------------------
 #  RUN_MODE          ansible | packer
@@ -9,15 +8,12 @@ set -e
 #  N8N_CALLBACK_URL  webhook n8n is listening on for the result
 #  RUN_ID            opaque id n8n uses to correlate the result
 #
-#  RUN_MODE=ansible Args:
-#  - PLAYBOOK
-#  - INVENTORY || HOSTS
-#  - LIMIT
-#  - TAGS
-#  - EXTRA_VARS
+#  RUN_MODE=ansible
+#  - ANSIBLE_ARGS
+#  - ANSIBLE_PLAYBOOK
 #  
 #  RUN_MODE=packer Args:   
-#  - TEMPLATE *required
+#  - PACKER_TEMPLATE *required
 #  - PACKER_VARS (path to a -var-file)
 #  
 #  Secrets:  
@@ -43,7 +39,7 @@ report(){
   if [ -n "${REPORT_CALLBACK_URL:-}" ]; then
     jq -n --arg run_id "$RUN_ID" --arg mode "${RUN_MODE:-}" \
           --arg ref "${CONTENT_REF:-main}" \
-          --arg target "${PLAYBOOK:-${TEMPLATE:-}}" \
+          --arg target "${ANSIBLE_PLAYBOOK:-${PACKER_TEMPLATE:-}}" \
           --arg status "$status" --argjson exit_code "$RC" \
           --arg summary "$summary" \
           '{run_id:$run_id, mode:$mode, ref:$ref, target:$target, status:$status, exit_code:$exit_code, summary:$summary}' \
@@ -54,7 +50,7 @@ report(){
     log "No REPORT_CALLBACK_URL set; final status '$status' (rc=$RC)"
   fi
 }
-# Adopt the real exit status if RC wasn't set explicitly (e.g. a :? validation trip).
+
 trap 'ec=$?; [ "$ec" -ne 0 ] && RC=$ec; report' EXIT
 fail(){ RC="${2:-1}"; log "ERROR: $1"; exit "$RC"; }
 
@@ -63,10 +59,10 @@ fail(){ RC="${2:-1}"; log "ERROR: $1"; exit "$RC"; }
 CONTENT_REF="${CONTENT_REF:-main}"
 
 # Load Doppler Service Token
-if [ -f "/run/secrets/dp_ansible_token" ]; then
-    export DOPPLER_TOKEN=$(cat /run/secrets/dp_ansible_token)
+if [ -f "/run/secrets/dp_runner_token" ]; then
+    export DOPPLER_TOKEN=$(cat /run/secrets/dp_runner_token)
 else
-    echo "Error: dp_ansible_token secret not found."
+    echo "Error: dp_runner_token secret not found."
     exit 1
 fi
 
@@ -75,20 +71,32 @@ mkdir -p ~/.ssh
 doppler run --command='printenv $RUNNER_SSH_KEY' > ~/.ssh/id_runner
 chmod 600 ~/.ssh/id_runner
 
-# Handle Inventory Override
-HAS_INVENTORY=false
-for arg in "$@"; do
-    if [[ "$arg" == "-i" ]] || [[ "$arg" == "--inventory" ]] || [[ "$arg" == "--inventory-file" ]]; then
-        HAS_INVENTORY=true
-        break
-    fi
-done
+# Grab the Playbooks / Templates from Git
+log "Pulling ${CONTENT_REPO_URL}@${CONTENT_REF}"
+git clone --depth 1 --branch "$CONTENT_REF" "${CONTENT_REPO_URL}" "$CONTENT_DIR" >>"$LOG" 2>&1 \
+  || fail "git clone failed (ref ${CONTENT_REF})" "$?"
+cd "$CONTENT_DIR"
 
-# Execute Ansible with Proxmox Dynamic Inventory Default
-if [ "$HAS_INVENTORY" = true ]; then
-    echo "Executing playbook with user-supplied inventory target..."
-    exec doppler run -- ansible-playbook "$@"
-else
-    echo "Executing playbook with Proxmox dynamic inventory..."
-    exec doppler run -- ansible-playbook -i proxmox.yml "$@"
-fi
+# Run
+case "$RUN_MODE" in
+  ansible)
+    : "${ANSIBLE_PLAYBOOK:?ANSIBLE_PLAYBOOK required for ansible mode}"
+    log "ansible-playbook $ANSIBLE_ARGS $ANSIBLE_PLAYBOOK"
+    ansible-playbook "$ANSIBLE_ARGS" "$ANSIBLE_PLAYBOOK" 2>&1 | tee -a "$LOG"; RC=${PIPESTATUS[0]}
+    ;;
+  packer)
+    : "${PACKER_TEMPLATE:?PACKER_TEMPLATE required for packer mode}"
+    log "packer init $PACKER_TEMPLATE"
+    packer init "$PACKER_TEMPLATE" 2>&1 | tee -a "$LOG"; RC=${PIPESTATUS[0]}
+    if [ "$RC" -eq 0 ]; then
+      vargs=(); [ -n "${PACKER_VARS:-}" ] && vargs+=(-var-file "$PACKER_VARS")
+      log "packer build ${vargs[*]} $TEMPLATE"
+      packer build "${vargs[@]}" "$TEMPLATE" 2>&1 | tee -a "$LOG"; RC=${PIPESTATUS[0]}
+    fi
+    ;;
+  *)
+    fail "unknown RUN_MODE '$RUN_MODE' (expected ansible|packer)"
+    ;;
+esac
+
+exit "$RC"
