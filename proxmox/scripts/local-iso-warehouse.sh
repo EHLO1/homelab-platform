@@ -5,13 +5,7 @@
 # distribution.
 # 
 # It's idempotent, AKA nothing is downloaded unless the release is newer.
-#
-# Example cron schedule:
-#
-# install -m 0755 local-iso-warehouse.sh /usr/local/sbin/local-iso-warehouse.sh
-# /etc/cron.d/iso-warehouse  # Sundays at 0330
-# 30 3 * * 0 root /usr/local/sbin/local-iso-warehouse.sh >> /var/log/iso-warehouse.log 2>&1
-#
+
 set -euo pipefail
 
 # Config -------------------------------------------------------------------------
@@ -20,16 +14,20 @@ VERSION="26.04"
 RELEASE_BASE="https://releases.ubuntu.com/${VERSION}"
 SUMS_URL="${RELEASE_BASE}/SHA256SUMS"
 ISO_SUFFIX="-live-server-amd64.iso"
-PVE_STORAGE="vm1-storage"
+
+# Proxmox specific config
+PVE_NODE="$(hostname)" # Dynamically grabs the current node name
+PVE_STORAGE="local"
+
+ISO_DIR="/var/lib/vz/template/iso" 
 STABLE_NAME="ubuntu-${VERSION}-live-server-amd64.iso"
-ISO_DIR="/var/lib/vz/template/iso"
 LOG_TAG="iso-warehouse"
 # --------------------------------------------------------------------------------
 
 log() { echo "[$(date -Is)] $*"; logger -t "$LOG_TAG" "$*" 2>/dev/null || true; }
 die() { log "ERROR: $*"; exit 1; }
 
-command -v pvesm >/dev/null || die "pvesm not found"
+command -v pvesh >/dev/null || die "pvesh not found"
 command -v curl  >/dev/null || die "curl not found"
 
 tmp="$(mktemp)"
@@ -59,18 +57,19 @@ if [ -f "$local_path" ]; then
         log "Local ${STABLE_NAME} is already current. Nothing to do."
         exit 0
     fi
-    log "Hash differs (have ${local_hash:0:12}…). Updating to ${upstream_file}."
+    log "Hash differs (have ${local_hash:0:12}…). Removing old ISO to make room for ${upstream_file}."
     rm -f "$local_path"
 else
-    log "No existing ISO at ${local_path}. Downloading."
+    log "No existing ISO at ${local_path}. Proceeding to download."
 fi
 
 # Tell Proxmox to download the ISO and verify the checksum
-log "Downloading into ${PVE_STORAGE} as ${STABLE_NAME}"
-pvesm download-url "$PVE_STORAGE" "$upstream_url" \
+log "Initiating Proxmox background download into ${PVE_STORAGE} as ${STABLE_NAME}..."
+pvesh create "/nodes/${PVE_NODE}/storage/${PVE_STORAGE}/download-url" \
     --content iso \
     --filename "$STABLE_NAME" \
+    --url "$upstream_url" \
     --checksum "$upstream_hash" \
     --checksum-algorithm sha256
 
-log "Done. Local ${STABLE_NAME} is updated."
+log "Task triggered successfully. Proxmox is handling the download in the background."
