@@ -11,6 +11,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install Dependencies
 RUN apt-get update && apt-get install -y \
     openssh-client \
+    git \
+    curl \
+    jq \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Ansible and Proxmox API dependencies

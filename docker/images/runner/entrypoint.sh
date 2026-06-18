@@ -13,8 +13,7 @@ set -uo pipefail
 #  - ANSIBLE_PLAYBOOK
 #  
 #  RUN_MODE=packer Args:   
-#  - PACKER_TEMPLATE *required
-#  - PACKER_VARS (path to a -var-file)
+#  - PACKER_ONLY
 #  
 #  Secrets:  
 #  DOPPLER_TOKEN
@@ -39,7 +38,7 @@ report(){
   if [ -n "${REPORT_CALLBACK_URL:-}" ]; then
     jq -n --arg run_id "$RUN_ID" --arg mode "${RUN_MODE:-}" \
           --arg ref "${CONTENT_REF:-main}" \
-          --arg target "${ANSIBLE_PLAYBOOK:-${PACKER_TEMPLATE:-}}" \
+          --arg target "${ANSIBLE_PLAYBOOK:-${PACKER_ONLY:-}}" \
           --arg status "$status" --argjson exit_code "$RC" \
           --arg summary "$summary" \
           '{run_id:$run_id, mode:$mode, ref:$ref, target:$target, status:$status, exit_code:$exit_code, summary:$summary}' \
@@ -68,8 +67,8 @@ fi
 
 # Prepare SSH keys
 mkdir -p ~/.ssh
-doppler run --command='printenv $RUNNER_SSH_KEY' > ~/.ssh/id_runner
-chmod 600 ~/.ssh/id_runner
+doppler secrets get ANSIBLE_SSH_KEY --plain > ~/.ssh/id_ansible
+chmod 600 ~/.ssh/id_ansible
 
 # Grab the Playbooks / Templates from Git
 log "Pulling ${CONTENT_REPO_URL}@${CONTENT_REF}"
@@ -84,14 +83,17 @@ case "$RUN_MODE" in
     log "ansible-playbook $ANSIBLE_ARGS $ANSIBLE_PLAYBOOK"
     ansible-playbook "$ANSIBLE_ARGS" "$ANSIBLE_PLAYBOOK" 2>&1 | tee -a "$LOG"; RC=${PIPESTATUS[0]}
     ;;
-  packer)
-    : "${PACKER_TEMPLATE:?PACKER_TEMPLATE required for packer mode}"
-    log "packer init $PACKER_TEMPLATE"
-    packer init "$PACKER_TEMPLATE" 2>&1 | tee -a "$LOG"; RC=${PIPESTATUS[0]}
+packer)
+    : "${PACKER_ONLY:?PACKER_ONLY target required for packer mode}" # ex: proxmox-iso.ubuntu-2604-docker
+    
+    log "packer init ."
+    packer init . 2>&1 | tee -a "$LOG"; RC=${PIPESTATUS[0]}
+    
     if [ "$RC" -eq 0 ]; then
-      vargs=(); [ -n "${PACKER_VARS:-}" ] && vargs+=(-var-file "$PACKER_VARS")
-      log "packer build ${vargs[*]} $TEMPLATE"
-      packer build "${vargs[@]}" "$TEMPLATE" 2>&1 | tee -a "$LOG"; RC=${PIPESTATUS[0]}
+      log "packer build -only=$PACKER_ONLY ."
+
+      doppler run --name-transformer lower-snake --mount secrets.auto.pkrvars.json -- \
+        packer build -only="$PACKER_ONLY" . 2>&1 | tee -a "$LOG"; RC=${PIPESTATUS[0]}
     fi
     ;;
   *)
