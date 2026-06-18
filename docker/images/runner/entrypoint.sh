@@ -83,7 +83,7 @@ case "$RUN_MODE" in
     log "ansible-playbook $ANSIBLE_ARGS $ANSIBLE_PLAYBOOK"
     ansible-playbook "$ANSIBLE_ARGS" "$ANSIBLE_PLAYBOOK" 2>&1 | tee -a "$LOG"; RC=${PIPESTATUS[0]}
     ;;
-packer)
+  packer)
     : "${PACKER_ONLY:?PACKER_ONLY target required for packer mode}" # ex: proxmox-iso.ubuntu-2604-docker
     
     log "packer init ."
