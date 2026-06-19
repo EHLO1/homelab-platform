@@ -67,7 +67,7 @@ fi
 
 # Prepare SSH keys
 mkdir -p ~/.ssh
-doppler secrets get ANSIBLE_SSH_KEY --plain > ~/.ssh/id_ansible
+doppler secrets get ANSIBLE_SSH_PRIVATE_KEY --plain > ~/.ssh/id_ansible
 chmod 600 ~/.ssh/id_ansible
 
 # Grab the Playbooks / Templates from Git
