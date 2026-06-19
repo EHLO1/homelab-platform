@@ -80,12 +80,15 @@ cd "$CONTENT_DIR"
 case "$RUN_MODE" in
   ansible)
     : "${ANSIBLE_PLAYBOOK:?ANSIBLE_PLAYBOOK required for ansible mode}"
+    
+    cd "$CONTENT_DIR/ansible"
     log "ansible-playbook $ANSIBLE_ARGS $ANSIBLE_PLAYBOOK"
     ansible-playbook "$ANSIBLE_ARGS" "$ANSIBLE_PLAYBOOK" 2>&1 | tee -a "$LOG"; RC=${PIPESTATUS[0]}
     ;;
   packer)
     : "${PACKER_ONLY:?PACKER_ONLY target required for packer mode}" # ex: proxmox-iso.ubuntu-2604-docker
     
+    cd "$CONTENT_DIR/packer"
     log "packer init ."
     packer init . 2>&1 | tee -a "$LOG"; RC=${PIPESTATUS[0]}
     
