@@ -22,6 +22,10 @@ RUN pip install --no-cache-dir ansible proxmoxer requests
 # Install Required Ansible Collection for Proxmox
 RUN ansible-galaxy collection install community.proxmox
 
+# Copy Ansible CFG and set the ENV
+COPY ansible.cfg /opt/ansible.cfg
+ENV ANSIBLE_CONFIG=/opt/ansible/ansible.cfg
+
 # Copy the doppler binary
 COPY --from=dpcli_image /bin/doppler /usr/local/bin/doppler
 
