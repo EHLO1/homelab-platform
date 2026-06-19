@@ -30,9 +30,6 @@ COPY --from=pkr_image /bin/packer /usr/local/bin/packer
 ENV PACKER_PLUGIN_PATH=/opt/packer/plugins
 RUN packer plugins install github.com/hashicorp/proxmox
 
-COPY ./ansible-data /opt/ansible
-WORKDIR /opt/ansible
-
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
