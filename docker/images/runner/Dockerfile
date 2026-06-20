@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     git \
     curl \
     jq \
+    xorriso \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Ansible and Proxmox API dependencies
