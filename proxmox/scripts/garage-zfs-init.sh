@@ -4,13 +4,18 @@
 # - Creates ZFS datasets if they do not already exist
 # - Mounts associated directories to Proxmox Garage LXC
 # - Sets subuid/subgid ownership of mounted directories
+# - Deploys garage configuration and initializes layout
+# - Installs caddy with dns.providers.cloudflare module
+# - Deploys caddy configuration
 # - Idempotent
+# - Doppler Secrets Manager is used to substitute secret values in template config
 # 
 # Intended to be used as the "Post-Install Hook" script that runs
 # after the Garage Proxmox Community Script:
 # https://community-scripts.org/scripts/garage
 
 set -euo pipefail
+umask 077
 
 # Config -------------------------------------------------------------------------
 GARAGE_META_ZFS_DATASET="primary-pool/garage/meta"
@@ -25,21 +30,28 @@ GARAGE_META_LXC_MOUNTPOINT="/var/lib/garage/meta"
 GARAGE_DATA_LXC_MOUNTPOINT="/var/lib/garage/data"
 GARAGE_SNAPSHOTS_LXC_MOUNTPOINT="/var/lib/garage/snapshots"
 
-GARAGE_LXC_CONTAINER_ID="$CTID"
-
 GARAGE_LXC_IDMAP="100000:100000"
 
-CONFIG_REPOSITORY="https://www.github.com/EHLO1/homelab-platform/main"
+GARAGE_ZONE="homelab"
+GARAGE_CAPACITY="300G"
+
+CONFIG_REPOSITORY="https://raw.githubusercontent.com/EHLO1/homelab-platform/main"
 GARAGE_CONFIG_TEMPLATE="$CONFIG_REPOSITORY/garage/garage.toml.tmpl"
-CADDY_CONFIG_TEMPLATE=$(curl -fsSL "$CONFIG_REPOSITORY/garage/Caddyfile")
+CADDY_CONFIG_TEMPLATE="$CONFIG_REPOSITORY/garage/Caddyfile"
 
 LOG_TAG="garage-zfs-init"
 # --------------------------------------------------------------------------------
 
-log() { echo "[$(date -Is)] $*"; logger -t "$LOG_TAG" "$*" 2>/dev/null || true; }
-die() { log "ERROR: $*"; exit 1; }
+log() {
+    echo "[$(date -Is)] $*"
+    logger -t "$LOG_TAG" "$*" 2>/dev/null || true
+}
 
-# Overwrite default Garage config
+die() {
+    log "ERROR: $*"
+    exit 1
+}
+
 deploy_garage_config() {
     curl -fsSL "$GARAGE_CONFIG_TEMPLATE" -o ./garage.toml.tmpl
     doppler secrets substitute ./garage.toml.tmpl > ./garage.toml
@@ -89,16 +101,53 @@ create_mounts() {
     log "ZFS datasets, mountpoints, and permissions applied successfully."
 }
 
-check_garage_status() {
-    # TODO: Add check to pct exec and get the garage systemd service status before continuing
-    pct exec $CTID -- systemctl status garage.service
-    # Verify Garage status
-    # TODO: Turn this into a conditional check (Check for an ID)
-    pct exec $CTID -- garage status
-    log "garage is running, responding, and has a valid layout."
+initialize_garage_layout() {
+    local node_id
+
+    node_id=$(pct exec "$CTID" -- garage node id)
+    node_id="${node_id%%@*}"
+
+    log "Initializing Garage layout for node $node_id"
+
+    pct exec "$CTID" -- \
+        garage layout assign "$node_id" \
+        -z "$GARAGE_ZONE" \
+        -c "$GARAGE_CAPACITY"
+
+    pct exec "$CTID" -- garage layout apply --version 1
+
+    log "Garage layout initialized."
 }
 
-# Install Caddy with Module dns.providers.cloudflare
+check_garage_status() {
+    local status
+
+    log "Checking Garage service..."
+
+    if ! pct exec "$CTID" -- systemctl is-active --quiet garage.service; then
+        pct exec "$CTID" -- systemctl --no-pager status garage.service || true
+        die "Garage service is not running."
+    fi
+
+    log "Checking Garage layout..."
+
+    status=$(pct exec "$CTID" -- garage status)
+
+    if grep -q "NO ROLE ASSIGNED" <<<"$status"; then
+        log "Garage node has no assigned role; initializing layout..."
+        initialize_garage_layout
+
+        # Verify initialization succeeded
+        status=$(pct exec "$CTID" -- garage status)
+
+        if grep -q "NO ROLE ASSIGNED" <<<"$status"; then
+            die "Garage layout initialization failed."
+        fi
+    fi
+
+    log "Garage is running and has a valid layout."
+}
+
 install_caddy() {
     log "Installing Caddy..."
 
@@ -147,30 +196,48 @@ deploy_caddy_config() {
     curl -fsSL "$CADDY_CONFIG_TEMPLATE" -o ./Caddyfile.tmpl
     doppler secrets substitute ./Caddyfile.tmpl > ./Caddyfile
 
-    # Deploy Caddyfile
-    log "Copying Caddyfile to LXC $CTID /etc/caddy/Caddyfile"
+    log "Copying Caddyfile to LXC $CTID..."
 
     pct push "$CTID" ./Caddyfile /etc/caddy/Caddyfile \
-    --user root \
-    --group caddy \
-    --perms 640
+        --user root \
+        --group caddy \
+        --perms 640
 
-    log "Caddyfile copied, restarting caddy..."
-    pct exec $CTID -- systemctl restart caddy
-    # TODO: Turn this into a conditional check (Check for running/healthy, etc..)
-    pct exec $CTID -- systemctl status caddy.service
-    log "caddy restart successful and status is running."
+    log "Validating Caddy configuration..."
+
+    if ! pct exec "$CTID" -- caddy validate --config /etc/caddy/Caddyfile; then
+        die "Caddy configuration validation failed."
+    fi
+
+    log "Restarting Caddy..."
+    pct exec "$CTID" -- systemctl restart caddy
+
+    if ! pct exec "$CTID" -- systemctl is-active --quiet caddy.service; then
+        pct exec "$CTID" -- systemctl --no-pager status caddy.service || true
+        die "Caddy failed to start."
+    fi
+
+    log "Caddy is running successfully."
 }
 
-# Game time
-# ------------
+# Game Time ----------------------------------------------------------------------
+WORKDIR=$(mktemp -d /run/garage-zfs-init.XXXXXX)
+trap 'rm -rf "$WORKDIR"' EXIT
+cd "$WORKDIR"
 
-mkdir -p /run/garage-zfs-init && cd /run/garage-zfs-init
 deploy_garage_config
+
+log "Stopping LXC $CTID..."
 pct shutdown $CTID
+
 create_mounts
+
+log "Stopping LXC $CTID..."
 pct start $CTID
+
 check_garage_status
+
 install_caddy
 deploy_caddy_config
-rm -rf /run/garage-zfs-init
+
+log "Garage post-install setup complete."
