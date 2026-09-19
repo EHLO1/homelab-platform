@@ -37,7 +37,7 @@ GARAGE_CAPACITY="300G"
 
 CONFIG_REPOSITORY="https://raw.githubusercontent.com/EHLO1/homelab-platform/main"
 GARAGE_CONFIG_TEMPLATE="$CONFIG_REPOSITORY/garage/garage.toml.tmpl"
-CADDY_CONFIG_TEMPLATE="$CONFIG_REPOSITORY/garage/Caddyfile"
+CADDY_CONFIG_TEMPLATE="$CONFIG_REPOSITORY/garage/Caddyfile.tmpl"
 
 LOG_TAG="garage-zfs-init"
 # --------------------------------------------------------------------------------
@@ -54,12 +54,15 @@ die() {
 
 deploy_garage_config() {
     curl -fsSL "$GARAGE_CONFIG_TEMPLATE" -o ./garage.toml.tmpl
-    doppler secrets substitute ./garage.toml.tmpl > ./garage.toml
+    RPC_SECRET_VALUE=$(openssl rand -hex 32) \
+    METRICS_TOKEN_VALUE=$(openssl rand -hex 32) \
+    envsubst '${RPC_SECRET_VALUE} ${METRICS_TOKEN_VALUE}' \
+        < ./garage.toml.tmpl > ./garage.toml
 
     log "Copying garage.toml to LXC $CTID /etc/garage.toml"
 
     pct push $CTID ./garage.toml /etc/garage.toml --user root --group root --perms 600
-    log "garage config copied..."
+    log "Garage config copied..."
 }
 
 create_zfs_dataset() {

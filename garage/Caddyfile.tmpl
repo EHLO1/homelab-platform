@@ -1,0 +1,23 @@
+*.garage.jjcasa.net, garage.jjcasa.net {
+    tls {
+        issuer acme {
+            email {{.SSL_EMAIL}}
+            dns cloudflare {{.CLOUDFLARE_API_TOKEN}}
+            resolvers 1.1.1.1 1.0.0.1
+        }
+    }
+    reverse_proxy 127.0.0.1:3900
+
+    header Access-Control-Allow-Private-Network true
+}
+
+garage-admin.jjcasa.net {
+    tls {
+        issuer acme {
+            email email {{.SSL_EMAIL}}
+            dns cloudflare {{.CLOUDFLARE_API_TOKEN}}
+            resolvers 1.1.1.1 1.0.0.1
+        }
+    }
+    reverse_proxy 127.0.0.1:3903
+}

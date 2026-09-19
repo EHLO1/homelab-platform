@@ -1,0 +1,24 @@
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+metadata_snapshots_dir = "/var/lib/garage/snapshots"
+db_engine = "sqlite"
+replication_factor = 1
+metadata_auto_snapshot_interval = "6h"
+
+metadata_fsync = true
+data_fsync = true
+
+compression_level = 1
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+rpc_secret = "$RPC_SECRET_VALUE"
+
+[s3_api]
+s3_region = "us-east-1"
+api_bind_addr = "127.0.0.1:3900"
+root_domain = ".garage.jjcasa.net"
+
+[admin]
+api_bind_addr = "127.0.0.1:3903"
+metrics_token = "$METRICS_TOKEN_VALUE"
