@@ -30,14 +30,18 @@ GARAGE_CAPACITY="300G"
 
 GARAGE_RESTIC_ZFS_DATASET="cold-storage-pool/restic/garage"
 GARAGE_RESTIC_ZFS_MOUNTPOINT="/mnt/backups/restic/garage"
-RESTIC_REPOSITORY="$GARAGE_RESTIC_ZFS_MOUNTPOINT"
+
+RESTIC_LOCAL_REPOSITORY="$GARAGE_RESTIC_ZFS_MOUNTPOINT"
 RESTIC_GDRIVE_REPOSITORY="rclone:gdrive:restic/garage"
 RESTIC_PASSWORD_FILE="/root/.config/restic/garage.pass"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 SNAPNAME="backup-${STAMP}"
 
-LOG_TAG="garage-zfs-init"
+CTID=""
+CT_STATUS=""
+
+LOG_TAG="garage-backup"
 # --------------------------------------------------------------------------------
 
 log() {
@@ -74,15 +78,98 @@ ensure_restic_exists() {
         return 0
     fi
 
-    log "Restic not found, installing it now..."
+    log "restic not found, installing it now..."
     apt update
     apt install -y restic
 
     if ! command -v restic >/dev/null 2>&1; then
-        die "Failed to install Restic."
+        die "Failed to install restic."
     fi
 
-    echo "Restic installed successfully."
+    log "restic installed successfully."
+}
+
+ensure_rclone_exists() {
+    if command -v rclone >/dev/null 2>&1; then
+        return 0
+    fi
+
+    log "rclone not found, installing it now..."
+    apt update
+    apt install -y rclone
+
+    if ! command -v rclone >/dev/null 2>&1; then
+        die "Failed to install rclone."
+    fi
+
+    log "rclone installed successfully."
+}
+
+check_restic_credentials() {
+    [[ -s "$RESTIC_PASSWORD_FILE" ]] ||
+        die "Restic password file does not exist: $RESTIC_PASSWORD_FILE"
+
+    chmod 600 "$RESTIC_PASSWORD_FILE"
+
+    log "Checking Google Drive access..."
+
+    if ! rclone lsd gdrive: >/dev/null; then
+        die "Unable to access Google Drive through rclone remote 'gdrive:'."
+    fi
+
+    log "Google Drive access confirmed."
+}
+
+restic_repository_exists() {
+    local repository="$1"
+    local rc=0
+
+    restic -r "$repository" cat config >/dev/null 2>&1 || rc=$?
+
+    case "$rc" in
+        0)
+            return 0
+            ;;
+        10)
+            return 1
+            ;;
+        *)
+            die "Unable to access restic repository '$repository' (exit code $rc)."
+            ;;
+    esac
+}
+
+initialize_restic_repositories() {
+    export RESTIC_PASSWORD_FILE
+
+    # Local
+    if restic_repository_exists "$RESTIC_LOCAL_REPOSITORY"; then
+        log "Local repository already initialized."
+    else
+        log "Initializing local repository..."
+
+        restic \
+            -r "$RESTIC_LOCAL_REPOSITORY" \
+            init
+
+        log "Local repository initialized."
+    fi
+
+    # Google Drive
+    if restic_repository_exists "$RESTIC_GDRIVE_REPOSITORY"; then
+        log "Google Drive repository already initialized."
+    else
+        log "Initializing Google Drive repository..."
+
+        RESTIC_FROM_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" \
+        restic \
+            -r "$RESTIC_GDRIVE_REPOSITORY" \
+            init \
+            --from-repo "$RESTIC_LOCAL_REPOSITORY" \
+            --copy-chunker-params
+
+        log "Google Drive repository initialized."
+    fi
 }
 
 create_zfs_dataset() {
@@ -184,20 +271,31 @@ save_garage_config() {
 }
 
 backup_garage_data() {
-    export RESTIC_REPOSITORY
-    export RESTIC_PASSWORD_FILE
+    log "Backing up Garage ZFS snapshots to local repository..."
 
-    log "Backing up ZFS snapshots with restic..."
-
-    restic backup \
+    restic \
+        -r "$RESTIC_LOCAL_REPOSITORY" \
+        backup \
         "${GARAGE_META_ZFS_MOUNTPOINT}/.zfs/snapshot/${SNAPNAME}" \
         "${GARAGE_DATA_ZFS_MOUNTPOINT}/.zfs/snapshot/${SNAPNAME}" \
         "${GARAGE_SNAPSHOTS_ZFS_MOUNTPOINT}/.zfs/snapshot/${SNAPNAME}" \
         "$WORKDIR" \
+        --host "$GARAGE_LXC_NAME" \
         --tag garage-instance \
         --tag "garage-${STAMP}"
 
-    log "Backup completed successfully."
+    log "Local Garage backup completed successfully."
+
+    log "Copying Garage backup to Google Drive..."
+
+    RESTIC_FROM_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" \
+    restic \
+        -r "$RESTIC_GDRIVE_REPOSITORY" \
+        copy \
+        --from-repo "$RESTIC_LOCAL_REPOSITORY" \
+        --tag "garage-${STAMP}"
+
+    log "Google Drive backup completed successfully."
 }
 
 remove_temp_zfs_snapshots() {
@@ -207,18 +305,10 @@ remove_temp_zfs_snapshots() {
     zfs destroy "${GARAGE_SNAPSHOTS_ZFS_DATASET}@${SNAPNAME}"
 }
 
-
-
-# Group functions
-# Install restic
-# Deploy restic config
-
-
 # Get CTID (VMID) from GARAGE_LXC_NAME and status
 read -r CTID CT_STATUS < <(
         pct list | awk -v name="$GARAGE_LXC_NAME" '$NF == name {print $1, $2; exit}'
 )
-
 
 
 log "=== Garage Instance Backup Complete ==="
