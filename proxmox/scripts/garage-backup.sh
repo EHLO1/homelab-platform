@@ -54,7 +54,7 @@ die() {
     exit 1
 }
 
-WORKDIR="$(mktemp -d /tmp/garage-backup.XXXXXX)"
+WORKDIR="$(mktemp -d /run/garage-backup.XXXXXX)"
 
 cleanup() {
     rm -rf "$WORKDIR"
@@ -199,10 +199,10 @@ ensure_backup_mounts_exist() {
 # Ensure CTID (VMID) exists and is running
 ensure_garage_lxc_is_up() {
     [[ -n "$CTID" ]] ||
-        die "ERROR: LXC '${GARAGE_LXC_NAME}' does not exist."
+        die "LXC '${GARAGE_LXC_NAME}' does not exist."
 
     [[ "$CT_STATUS" == "running" ]] ||
-        die "ERROR: LXC '${GARAGE_LXC_NAME}' (${CTID}) is not running."
+        die "LXC '${GARAGE_LXC_NAME}' (${CTID}) is not running."
 }
 
 garage_service_check() {
