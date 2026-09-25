@@ -38,9 +38,6 @@ RESTIC_PASSWORD_FILE="/root/.config/restic/garage.pass"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 SNAPNAME="backup-${STAMP}"
 
-CTID=""
-CT_STATUS=""
-
 LOG_TAG="garage-backup"
 # --------------------------------------------------------------------------------
 
@@ -55,14 +52,23 @@ die() {
 }
 
 WORKDIR="$(mktemp -d /run/garage-backup.XXXXXX)"
+GARAGE_WAS_RUNNING=0
+GARAGE_STOPPED_BY_SCRIPT=0
 
 cleanup() {
+    if [[ "$GARAGE_STOPPED_BY_SCRIPT" -eq 1 ]]; then
+        log "Starting Garage after interrupted backup..."
+        pct exec "$CTID" -- systemctl start garage || true
+    fi
+
     rm -rf "$WORKDIR"
 }
+
 trap cleanup EXIT
 
 log "=== Garage Instance Backup: ${STAMP} ==="
 
+# 1
 ensure_restic_exists() {
     if [[ ! -f /etc/os-release ]]; then
         die "Unable to determine OS."
@@ -89,6 +95,7 @@ ensure_restic_exists() {
     log "restic installed successfully."
 }
 
+# 2
 ensure_rclone_exists() {
     if command -v rclone >/dev/null 2>&1; then
         return 0
@@ -105,6 +112,7 @@ ensure_rclone_exists() {
     log "rclone installed successfully."
 }
 
+# 3
 check_restic_credentials() {
     [[ -s "$RESTIC_PASSWORD_FILE" ]] ||
         die "Restic password file does not exist: $RESTIC_PASSWORD_FILE"
@@ -120,6 +128,7 @@ check_restic_credentials() {
     log "Google Drive access confirmed."
 }
 
+# Helper
 restic_repository_exists() {
     local repository="$1"
     local rc=0
@@ -139,6 +148,33 @@ restic_repository_exists() {
     esac
 }
 
+# Helper
+create_zfs_dataset() {
+    local dataset="$1"
+    local mountpoint="$2"
+
+    if ! zfs list -H -o name "$dataset" >/dev/null 2>&1; then
+        log "Creating ZFS dataset $dataset"
+        zfs create -p -o mountpoint="$mountpoint" -o atime=off "$dataset"
+    else
+        log "ZFS dataset $dataset already exists"
+        zfs set mountpoint="$mountpoint" "$dataset"
+        zfs set atime=off "$dataset"
+    fi
+}
+
+# 4
+ensure_backup_mounts_exist() {
+    # Create ZFS Datasets and set Mountpoints
+    create_zfs_dataset "$GARAGE_RESTIC_ZFS_DATASET" "$GARAGE_RESTIC_ZFS_MOUNTPOINT"
+
+    # Configure ZFS Tuning
+    zfs set compression=lz4 "$GARAGE_RESTIC_ZFS_DATASET"
+
+    log "ZFS datasets, mountpoints, and permissions applied successfully."
+}
+
+# 5
 initialize_restic_repositories() {
     export RESTIC_PASSWORD_FILE
 
@@ -172,30 +208,7 @@ initialize_restic_repositories() {
     fi
 }
 
-create_zfs_dataset() {
-    local dataset="$1"
-    local mountpoint="$2"
-
-    if ! zfs list -H -o name "$dataset" >/dev/null 2>&1; then
-        log "Creating ZFS dataset $dataset"
-        zfs create -p -o mountpoint="$mountpoint" -o atime=off "$dataset"
-    else
-        log "ZFS dataset $dataset already exists"
-        zfs set mountpoint="$mountpoint" "$dataset"
-        zfs set atime=off "$dataset"
-    fi
-}
-
-ensure_backup_mounts_exist() {
-    # Create ZFS Datasets and set Mountpoints
-    create_zfs_dataset "$GARAGE_RESTIC_ZFS_DATASET" "$GARAGE_RESTIC_ZFS_MOUNTPOINT"
-
-    # Configure ZFS Tuning
-    zfs set compression=lz4 "$GARAGE_RESTIC_ZFS_DATASET"
-
-    log "ZFS datasets, mountpoints, and permissions applied successfully."
-}
-
+# 6
 # Ensure CTID (VMID) exists and is running
 ensure_garage_lxc_is_up() {
     [[ -n "$CTID" ]] ||
@@ -205,21 +218,22 @@ ensure_garage_lxc_is_up() {
         die "LXC '${GARAGE_LXC_NAME}' (${CTID}) is not running."
 }
 
+# 7
 garage_service_check() {
-    GARAGE_WAS_RUNNING=0
     if pct exec "$CTID" -- systemctl is-active --quiet garage; then
-        export GARAGE_WAS_RUNNING=1
+        GARAGE_WAS_RUNNING=1
     fi
 }
 
+# Called for Errors
 restart_garage() {
     if [[ "$GARAGE_WAS_RUNNING" -eq 1 ]]; then
         log "Restarting Garage after error..."
         pct exec "$CTID" -- systemctl start garage || true
     fi
 }
-trap 'restart_garage; cleanup' ERR INT TERM
 
+# 8
 garage_metadata_snapshot() {
     if [[ "$GARAGE_WAS_RUNNING" -eq 1 ]]; then
         log "Creating Garage metadata snapshot..."
@@ -227,13 +241,16 @@ garage_metadata_snapshot() {
     fi
 }
 
+# 12
 stop_garage() {
     if [[ "$GARAGE_WAS_RUNNING" -eq 1 ]]; then
         log "Stopping Garage..."
         pct exec "$CTID" -- systemctl stop garage
+        GARAGE_STOPPED_BY_SCRIPT=1
     fi
 }
 
+#13
 create_temp_zfs_snapshots() {
     log "Creating ZFS snapshots..."
     zfs snapshot "${GARAGE_META_ZFS_DATASET}@${SNAPNAME}"
@@ -241,14 +258,17 @@ create_temp_zfs_snapshots() {
     zfs snapshot "${GARAGE_SNAPSHOTS_ZFS_DATASET}@${SNAPNAME}"
 }
 
+#14
 start_garage() {
-    if [[ "$GARAGE_WAS_RUNNING" -eq 1 ]]; then
-        echo "Starting Garage..."
+    if [[ "$GARAGE_STOPPED_BY_SCRIPT" -eq 1 ]]; then
+        log "Starting Garage..."
         pct exec "$CTID" -- systemctl start garage
+        GARAGE_STOPPED_BY_SCRIPT=0
     fi
 }
 trap cleanup EXIT
 
+# 15
 # Save data about garage
 save_garage_config() {
     log "Saving Garage and LXC configuration..."
@@ -270,6 +290,7 @@ save_garage_config() {
         > "${WORKDIR}/garage-keys.txt" || true
 }
 
+# 16
 backup_garage_data() {
     log "Backing up Garage ZFS snapshots to local repository..."
 
@@ -298,6 +319,7 @@ backup_garage_data() {
     log "Google Drive backup completed successfully."
 }
 
+# 17
 remove_temp_zfs_snapshots() {
     log "Removing temporary ZFS snapshots..."
     zfs destroy "${GARAGE_META_ZFS_DATASET}@${SNAPNAME}"
@@ -306,9 +328,47 @@ remove_temp_zfs_snapshots() {
 }
 
 # Get CTID (VMID) from GARAGE_LXC_NAME and status
+CTID=""
+CT_STATUS=""
 read -r CTID CT_STATUS < <(
-        pct list | awk -v name="$GARAGE_LXC_NAME" '$NF == name {print $1, $2; exit}'
-)
+    pct list |
+        awk -v name="$GARAGE_LXC_NAME" '$NF == name {print $1, $2; exit}'
+) || true
+
+
+# Preconditions ------------------------------------------------------------------
+
+ensure_restic_exists # 1
+ensure_rclone_exists # 2
+check_restic_credentials # 3
+
+ensure_backup_mounts_exist # 4
+
+initialize_restic_repositories # 5
+
+ensure_garage_lxc_is_up # 6
+
+
+# Capture Garage -----------------------------------------------------------------
+
+garage_service_check # 7
+
+save_garage_config # 8
+
+garage_metadata_snapshot
+
+stop_garage
+create_temp_zfs_snapshots
+start_garage
+
+
+# Backup -------------------------------------------------------------------------
+
+backup_garage_data
+
+# We no longer need the ZFS snapshots after restic has safely
+# captured their contents into the local repository.
+remove_temp_zfs_snapshots
 
 
 log "=== Garage Instance Backup Complete ==="
